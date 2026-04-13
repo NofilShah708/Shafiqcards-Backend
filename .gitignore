@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Keep .env.example
+
+# Lockfiles
+package-lock.json
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Testing
+test-results/
+.nyc_output
+
+# Build outputs (if any)
+dist/
+build/
+
+# MongoDB
+*.bson
+mongod.lock
+
+# Cloudinary cache (if local)
+.cache/
+
+# Nodemon
+nodemon.json
