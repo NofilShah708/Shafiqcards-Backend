@@ -35,6 +35,20 @@ const productSchema = new mongoose.Schema(
       maxlength: [1000, 'Description cannot exceed 1000 characters'],
       default: '',
     },
+    adminNote: {
+      type: String,
+      trim: true,
+      maxlength: [1000, 'Admin note cannot exceed 1000 characters'],
+      default: '',
+    },
+    keywords: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: (arr) => Array.isArray(arr) && arr.every((item) => typeof item === 'string' && item.trim().length > 0),
+        message: 'Keywords must be a list of non-empty strings',
+      },
+    },
     price: {
       type: String,
       trim: true,
@@ -53,6 +67,8 @@ const productSchema = new mongoose.Schema(
 
 // Index category for fast category-based queries
 productSchema.index({ category: 1 });
+// Index keywords for fast keyword filtering
+productSchema.index({ keywords: 1 });
 // Index createdAt descending so newest products appear first by default
 productSchema.index({ createdAt: -1 });
 

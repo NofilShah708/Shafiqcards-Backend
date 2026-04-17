@@ -1,3 +1,5 @@
+const jwt = require('jsonwebtoken');
+const Admin = require('../models/Admin');
 const Product = require('../models/Product');
 
 const normalizeMediaUrls = (mediaUrls = []) => {
@@ -22,6 +24,110 @@ const normalizeMediaUrls = (mediaUrls = []) => {
   });
 };
 
+const parseKeywords = (keywords) => {
+  if (Array.isArray(keywords)) {
+    return Array.from(new Set(keywords.map((keyword) => String(keyword).trim().toLowerCase()).filter(Boolean)));
+  }
+  if (!keywords) return [];
+  return Array.from(new Set(String(keywords)
+    .split(',')
+    .map((keyword) => keyword.trim().toLowerCase())
+    .filter(Boolean)));
+};
+
+const validateKeywordCount = (keywords = []) => {
+  return Array.isArray(keywords) && keywords.length >= 2 && keywords.length <= 10;
+};
+
+const normalizeSearchToken = (token = '') => {
+  let normalized = String(token).toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+  if (!normalized) return '';
+
+  if (normalized.length > 4) {
+    if (normalized.endsWith('ing')) normalized = normalized.slice(0, -3);
+    else if (normalized.endsWith('able')) normalized = normalized.slice(0, -4);
+    else if (normalized.endsWith('ed')) normalized = normalized.slice(0, -2);
+  }
+
+  if (normalized.length > 2 && normalized.endsWith('s') && !normalized.endsWith('ss')) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  return normalized;
+};
+
+const buildSearchTokens = (search = '') => {
+  const stopwords = new Set([
+    'i', 'me', 'you', 'we', 'they', 'he', 'she', 'it', 'the', 'a', 'an', 'and', 'or', 'for', 'to', 'of', 'with',
+    'on', 'in', 'at', 'by', 'from', 'want', 'wanting', 'looking', 'please', 'need', 'give', 'show', 'can', 'could',
+    'would', 'should', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had'
+  ]);
+
+  return String(search)
+    .toLowerCase()
+    .split(/[\s,.;:!?]+/)
+    .map(normalizeSearchToken)
+    .filter(Boolean)
+    .filter((term) => !stopwords.has(term));
+};
+
+const buildSearchVariants = (token = '') => {
+  const variants = new Set([token]);
+  if (!token) return [];
+
+  if (token.includes('scroll') && token.includes('card')) {
+    variants.add('scroll');
+    variants.add('card');
+    variants.add('cards');
+    variants.add('scrollable');
+    variants.add('scrolling');
+  }
+  if (token.includes('scrollable')) {
+    variants.add('scroll');
+    variants.add('scrolling');
+  }
+  if (token.includes('scrolling')) {
+    variants.add('scroll');
+    variants.add('scrollable');
+  }
+  if (token.includes('cards')) {
+    variants.add('card');
+  }
+  if (token.includes('invite')) {
+    variants.add('invitation');
+  }
+  if (token.includes('envelop')) {
+    variants.add('envelope');
+  }
+
+  return Array.from(variants);
+};
+
+const buildSearchRegex = (term = '') => {
+  const safeTerm = escapeRegExp(String(term));
+  return new RegExp(`\\b${safeTerm}[a-z]*\\b`, 'i');
+};
+
+const escapeRegExp = (value = '') => {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+const verifyAdminRequest = async (req) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const admin = await Admin.findById(decoded.id).select('-password');
+    return !!admin;
+  } catch (err) {
+    return false;
+  }
+};
+
 // -------------------------------------------------------
 // @desc    Create a new product (with media upload)
 // @route   POST /api/products
@@ -34,7 +140,16 @@ const normalizeMediaUrls = (mediaUrls = []) => {
 // -------------------------------------------------------
 const createProduct = async (req, res) => {
   const rawTitle = typeof req.body.title === 'string' ? req.body.title.trim() : '';
-  const { category, description, price, isActive } = req.body;
+  const { category, description, price, isActive, adminNote, keywords } = req.body;
+  const rawAdminNote = typeof adminNote === 'string' ? adminNote.trim() : '';
+  const parsedKeywords = parseKeywords(keywords);
+
+  if (!validateKeywordCount(parsedKeywords)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please provide between 2 and 10 keywords, separated by commas.',
+    });
+  }
 
   // Validate required fields
   if (!category) {
@@ -90,6 +205,8 @@ const createProduct = async (req, res) => {
     title: rawTitle,
     category: category.toLowerCase(),
     description: description || '',
+    adminNote: rawAdminNote,
+    keywords: parsedKeywords,
     price: rawPrice && rawPrice !== '' ? rawPrice : null,
     mediaUrls,
     mediaPublicIds,
@@ -109,9 +226,25 @@ const createProduct = async (req, res) => {
 // @access  Public
 // -------------------------------------------------------
 const getProducts = async (req, res) => {
-  const { category, page = 1, limit = 20, admin } = req.query;
+  const { category, page = 1, limit = 20, admin, search } = req.query;
+  const isAdminRequest = admin === 'true' && await verifyAdminRequest(req);
 
-  const filter = admin === 'true' ? {} : { isActive: { $ne: false } };
+  const filter = isAdminRequest ? {} : { isActive: { $ne: false } };
+  if (search && String(search).trim()) {
+    const searchTokens = buildSearchTokens(search);
+    if (searchTokens.length) {
+      filter.$and = searchTokens.map((token) => {
+        const variants = buildSearchVariants(token);
+        return {
+          $or: variants.flatMap((variant) => [
+            { title: buildSearchRegex(variant) },
+            { description: buildSearchRegex(variant) },
+            { keywords: buildSearchRegex(variant) }
+          ])
+        };
+      });
+    }
+  }
   if (category) {
     const validCategories = ['invitation', 'envelope', 'box', 'reel'];
     if (!validCategories.includes(category.toLowerCase())) {
@@ -133,6 +266,9 @@ const getProducts = async (req, res) => {
   const normalizedProducts = products.map((product) => {
     const obj = product.toObject ? product.toObject() : { ...product };
     obj.mediaUrls = normalizeMediaUrls(obj.mediaUrls);
+    if (!isAdminRequest) {
+      delete obj.adminNote;
+    }
     return obj;
   });
 
@@ -157,7 +293,7 @@ const getProducts = async (req, res) => {
 // -------------------------------------------------------
 const getProductsByCategory = async (req, res) => {
   const { category } = req.params;
-  const { page = 1, limit = 20, admin } = req.query;
+  const { page = 1, limit = 20, admin, search } = req.query;
 
   const validCategories = ['invitation', 'envelope', 'box', 'reel'];
   if (!validCategories.includes(category.toLowerCase())) {
@@ -167,9 +303,25 @@ const getProductsByCategory = async (req, res) => {
     });
   }
 
+  const isAdminRequest = admin === 'true' && await verifyAdminRequest(req);
   const filter = { category: category.toLowerCase() };
-  if (admin !== 'true') {
+  if (!isAdminRequest) {
      filter.isActive = { $ne: false };
+  }
+  if (search && String(search).trim()) {
+    const searchTokens = buildSearchTokens(search);
+    if (searchTokens.length) {
+      filter.$and = searchTokens.map((token) => {
+        const variants = buildSearchVariants(token);
+        return {
+          $or: variants.flatMap((variant) => [
+            { title: buildSearchRegex(variant) },
+            { description: buildSearchRegex(variant) },
+            { keywords: buildSearchRegex(variant) }
+          ])
+        };
+      });
+    }
   }
   
   const skip = (Number(page) - 1) * Number(limit);
@@ -182,6 +334,9 @@ const getProductsByCategory = async (req, res) => {
   const normalizedProducts = products.map((product) => {
     const obj = product.toObject ? product.toObject() : { ...product };
     obj.mediaUrls = normalizeMediaUrls(obj.mediaUrls);
+    if (!isAdminRequest) {
+      delete obj.adminNote;
+    }
     return obj;
   });
 
@@ -207,9 +362,10 @@ const getProductsByCategory = async (req, res) => {
 // -------------------------------------------------------
 const getProductById = async (req, res) => {
   const { admin } = req.query;
+  const isAdminRequest = admin === 'true' && await verifyAdminRequest(req);
   const product = await Product.findById(req.params.id);
 
-  if (!product || (product.isActive === false && admin !== 'true')) {
+  if (!product || (product.isActive === false && !isAdminRequest)) {
     return res.status(404).json({
       success: false,
       message: 'Product not found.',
@@ -218,6 +374,9 @@ const getProductById = async (req, res) => {
 
   const normalizedProduct = product.toObject ? product.toObject() : { ...product };
   normalizedProduct.mediaUrls = normalizeMediaUrls(normalizedProduct.mediaUrls);
+  if (!isAdminRequest) {
+    delete normalizedProduct.adminNote;
+  }
 
   return res.status(200).json({
     success: true,
@@ -255,7 +414,7 @@ const deleteProduct = async (req, res) => {
 // @access  Private (admin only)
 // -------------------------------------------------------
 const updateProduct = async (req, res) => {
-  const { title, category, description, price, isActive } = req.body;
+  const { title, category, description, price, isActive, adminNote, keywords } = req.body;
   
   let product = await Product.findById(req.params.id);
 
@@ -279,6 +438,17 @@ const updateProduct = async (req, res) => {
     product.category = category.toLowerCase();
   }
   if (description !== undefined) product.description = description;
+  if (adminNote !== undefined) product.adminNote = adminNote;
+  if (keywords !== undefined) {
+    const parsedKeywords = parseKeywords(keywords);
+    if (!validateKeywordCount(parsedKeywords)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide between 2 and 10 keywords, separated by commas.',
+      });
+    }
+    product.keywords = parsedKeywords;
+  }
   if (price !== undefined) {
     const rawPrice = price === '' ? null : String(price).trim();
     if (rawPrice !== null && rawPrice !== '' && !/^[\d,]+$/.test(rawPrice)) {
